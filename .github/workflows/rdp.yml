@@ -1,0 +1,134 @@
+name: RDP Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Run duration (hours)'
+        required: false
+        default: '4'
+      tailscale_auth_key:
+        description: 'Tailscale Auth Key'
+        required: true
+
+env:
+  RDP_USERNAME: hkpBHMzC6u9FY
+  RDP_PASSWORD: TMq2sbT5GrXNnQ0D1OUa
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: ${{ fromJSON(inputs.duration || '4') * 60 }}
+
+    steps:
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ inputs.tailscale_auth_key }}
+          args: --accept-routes --accept-dns
+
+      - name: Wait for Tailscale
+        run: |
+          Write-Host "Waiting for Tailscale to connect..."
+          $maxAttempts = 30
+          $attempt = 0
+          while ($attempt -lt $maxAttempts) {
+            $status = tailscale status 2>&1
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Tailscale connected!"
+              tailscale status
+              break
+            }
+            $attempt++
+            Write-Host "Attempt $attempt/$maxAttempts..."
+            Start-Sleep -Seconds 5
+          }
+          if ($attempt -eq $maxAttempts) {
+            Write-Host "Tailscale failed to connect"
+            exit 1
+          }
+
+      - name: Get Tailscale IP
+        id: tailscale
+        run: |
+          $tsIP = (tailscale ip -4).Trim()
+          Write-Host "Tailscale IPv4: $tsIP"
+          echo "TS_IP=$tsIP" >> $env:GITHUB_OUTPUT
+
+      - name: Create RDP User
+        run: |
+          $secPassword = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
+          New-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $secPassword -FullName "RDP User" -Description "GitHub Actions RDP User" -PasswordNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "${{ env.RDP_USERNAME }}"
+          Write-Host "User ${{ env.RDP_USERNAME }} created and added to Administrators"
+
+      - name: Configure RDP
+        run: |
+          # Enable RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          
+          # Enable NLA (Network Level Authentication)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+          
+          # Configure firewall
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          
+          # Set RDP port to 3389 (default)
+          Write-Host "RDP configured on port 3389"
+
+      - name: Install useful tools
+        run: |
+          Write-Host "Installing tools..."
+          
+          # Install Chrome
+          choco install googlechrome -y --no-progress 2>&1 | Out-Null
+          Write-Host "Chrome installed"
+          
+          # Install VS Code
+          choco install vscode -y --no-progress 2>&1 | Out-Null
+          Write-Host "VS Code installed"
+          
+          # Install 7-Zip
+          choco install 7zip -y --no-progress 2>&1 | Out-Null
+          Write-Host "7-Zip installed"
+          
+          # Install Python
+          choco install python -y --no-progress 2>&1 | Out-Null
+          Write-Host "Python installed"
+          
+          # Install Node.js
+          choco install nodejs-lts -y --no-progress 2>&1 | Out-Null
+          Write-Host "Node.js installed"
+          
+          Write-Host "All tools installed!"
+
+      - name: Keep alive
+        run: |
+          $duration = [int]("${{ inputs.duration || '4' }}") * 3600
+          $startTime = Get-Date
+          $endTime = $startTime.AddSeconds($duration)
+          
+          Write-Host "RDP Server will run until: $endTime"
+          Write-Host "Connect via Tailscale IP: ${{ steps.tailscale.outputs.TS_IP }}"
+          Write-Host "Username: ${{ env.RDP_USERNAME }}"
+          Write-Host "Password: ${{ env.RDP_PASSWORD }}"
+          
+          while ((Get-Date) -lt $endTime) {
+            $remaining = $endTime - (Get-Date)
+            Write-Host "Time remaining: $($remaining.Hours)h $($remaining.Minutes)m"
+            Start-Sleep -Seconds 60
+          }
+          
+          Write-Host "Session ended."
+
+      - name: Print connection info
+        if: always()
+        run: |
+          Write-Host "=============================="
+          Write-Host "  RDP Connection Info"
+          Write-Host "=============================="
+          Write-Host "Tailscale IP: ${{ steps.tailscale.outputs.TS_IP }}"
+          Write-Host "Port: 3389"
+          Write-Host "Username: ${{ env.RDP_USERNAME }}"
+          Write-Host "Password: ${{ env.RDP_PASSWORD }}"
+          Write-Host "=============================="
