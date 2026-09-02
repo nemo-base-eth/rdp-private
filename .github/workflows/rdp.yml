@@ -31,49 +31,50 @@ jobs:
         run: |
           $ts = "C:\Program Files\Tailscale\tailscale.exe"
           
-          # Start login
-          Start-Process $ts -ArgumentList "login" -NoNewWindow -RedirectStandardOutput "$env:TEMP\ts_login.txt"
+          # Run login and capture output
+          Write-Host "Starting Tailscale login..."
+          $login = Start-Process $ts -ArgumentList "login" -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\ts_out.txt" -RedirectStandardError "$env:TEMP\ts_err.txt"
           
-          # Wait for URL
-          Start-Sleep -Seconds 8
+          # Wait for URL to appear
+          Start-Sleep -Seconds 10
           
-          $output = Get-Content "$env:TEMP\ts_login.txt" -Raw
-          Write-Host "Output: $output"
+          $out = Get-Content "$env:TEMP\ts_out.txt" -Raw -ErrorAction SilentlyContinue
+          $err = Get-Content "$env:TEMP\ts_err.txt" -Raw -ErrorAction SilentlyContinue
           
-          # Extract URL
-          if ($output -match "https://login\.tailscale\.com/a/\S+") {
+          Write-Host "stdout: $out"
+          Write-Host "stderr: $err"
+          
+          # Try extract URL from both
+          $combined = "$out $err"
+          if ($combined -match "https://login\.tailscale\.com/a/[^\s]+") {
             $url = $matches[0]
             Write-Host ""
             Write-Host "========================================"
-            Write-Host "BUKA LINK INI DI BROWSER UNTUK LOGIN:"
+            Write-Host "BUKA LINK INI DI BROWSER:"
             Write-Host "========================================"
             Write-Host $url
             Write-Host "========================================"
             echo "TS_URL=$url" >> $env:GITHUB_OUTPUT
           }
           
-          # Wait for auth
+          # Wait for login process to finish (user auth)
           Write-Host ""
-          Write-Host "Menunggu auth..."
-          for ($i=0; $i -lt 60; $i++) {
-            $check = & $ts status 2>&1
-            if ($check -match "Connected" -or $check -match "current") {
-              Write-Host "Tailscale connected!"
-              break
-            }
-            Write-Host "Waiting... ($i/60)"
-            Start-Sleep -Seconds 5
-          }
+          Write-Host "Menunggu kamu login..."
+          $login.WaitForExit(300000)  # 5 min max
+          Write-Host "Login process selesai, exit code: $($login.ExitCode)"
 
       - name: Get Tailscale IP
         id: ts_ip
         run: |
           $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          
+          Write-Host "Checking Tailscale status..."
+          & $ts status
+          
           Start-Sleep -Seconds 3
           $ip = & $ts ip -4 2>&1
           Write-Host "Tailscale IP: $ip"
           echo "IP=$ip" >> $env:GITHUB_OUTPUT
-          & $ts status
 
       - name: Create User & Enable RDP
         run: |
