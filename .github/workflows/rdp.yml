@@ -7,9 +7,6 @@ on:
         description: 'Run duration (hours)'
         required: false
         default: '4'
-      tailscale_auth_key:
-        description: 'Tailscale Auth Key'
-        required: true
 
 env:
   RDP_USERNAME: hkpBHMzC6u9FY
@@ -21,114 +18,82 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Setup Tailscale
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ inputs.tailscale_auth_key }}
-          args: --accept-routes --accept-dns
-
-      - name: Wait for Tailscale
-        run: |
-          Write-Host "Waiting for Tailscale to connect..."
-          $maxAttempts = 30
-          $attempt = 0
-          while ($attempt -lt $maxAttempts) {
-            $status = tailscale status 2>&1
-            if ($LASTEXITCODE -eq 0) {
-              Write-Host "Tailscale connected!"
-              tailscale status
-              break
-            }
-            $attempt++
-            Write-Host "Attempt $attempt/$maxAttempts..."
-            Start-Sleep -Seconds 5
-          }
-          if ($attempt -eq $maxAttempts) {
-            Write-Host "Tailscale failed to connect"
-            exit 1
-          }
-
-      - name: Get Tailscale IP
-        id: tailscale
-        run: |
-          $tsIP = (tailscale ip -4).Trim()
-          Write-Host "Tailscale IPv4: $tsIP"
-          echo "TS_IP=$tsIP" >> $env:GITHUB_OUTPUT
-
       - name: Create RDP User
         run: |
           $secPassword = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
-          New-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $secPassword -FullName "RDP User" -Description "GitHub Actions RDP User" -PasswordNeverExpires
+          New-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $secPassword -FullName "RDP User" -Description "GitHub Actions RDP" -PasswordNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "${{ env.RDP_USERNAME }}"
-          Write-Host "User ${{ env.RDP_USERNAME }} created and added to Administrators"
+          Write-Host "User created: ${{ env.RDP_USERNAME }}"
 
-      - name: Configure RDP
+      - name: Enable RDP
         run: |
-          # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          
-          # Enable NLA (Network Level Authentication)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
-          
-          # Configure firewall
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          
-          # Set RDP port to 3389 (default)
-          Write-Host "RDP configured on port 3389"
+          Write-Host "RDP enabled"
 
-      - name: Install useful tools
+      - name: Install tools
         run: |
-          Write-Host "Installing tools..."
+          choco install googlechrome vscode python nodejs-lts 7zip -y --no-progress
+          Write-Host "Tools installed"
+
+      - name: Start RDP tunnel (serveo)
+        run: |
+          # Download ssh if needed
+          if (!(Test-Path "C:\ssh")) { mkdir "C:\ssh" }
           
-          # Install Chrome
-          choco install googlechrome -y --no-progress 2>&1 | Out-Null
-          Write-Host "Chrome installed"
+          # Use Cloudflare tunnel as alternative
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "C:\ssh\cloudflared.exe"
           
-          # Install VS Code
-          choco install vscode -y --no-progress 2>&1 | Out-Null
-          Write-Host "VS Code installed"
+          # Start tunnel in background
+          Start-Process -FilePath "C:\ssh\cloudflared.exe" -ArgumentList "tunnel --url tcp://localhost:3389" -NoNewWindow -RedirectStandardOutput "C:\ssh\tunnel.log"
           
-          # Install 7-Zip
-          choco install 7zip -y --no-progress 2>&1 | Out-Null
-          Write-Host "7-Zip installed"
+          Start-Sleep -Seconds 10
           
-          # Install Python
-          choco install python -y --no-progress 2>&1 | Out-Null
-          Write-Host "Python installed"
+          # Extract tunnel URL from logs
+          $log = Get-Content "C:\ssh\tunnel.log" -Raw
+          Write-Host "Tunnel log: $log"
           
-          # Install Node.js
-          choco install nodejs-lts -y --no-progress 2>&1 | Out-Null
-          Write-Host "Node.js installed"
-          
-          Write-Host "All tools installed!"
+          # Try to find the URL
+          if ($log -match "https://[a-z0-9-]+\.trycloudflare\.com") {
+            $tunnelUrl = $matches[0]
+            Write-Host "Tunnel URL: $tunnelUrl"
+            echo "TUNNEL_URL=$tunnelUrl" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Could not parse tunnel URL, checking again..."
+            Start-Sleep -Seconds 5
+            $log = Get-Content "C:\ssh\tunnel.log" -Raw
+            Write-Host "Tunnel log (retry): $log"
+          }
 
       - name: Keep alive
         run: |
           $duration = [int]("${{ inputs.duration || '4' }}") * 3600
-          $startTime = Get-Date
-          $endTime = $startTime.AddSeconds($duration)
+          $endTime = (Get-Date).AddSeconds($duration)
           
-          Write-Host "RDP Server will run until: $endTime"
-          Write-Host "Connect via Tailscale IP: ${{ steps.tailscale.outputs.TS_IP }}"
+          Write-Host "=============================="
+          Write-Host "  RDP Server Running"  
+          Write-Host "=============================="
           Write-Host "Username: ${{ env.RDP_USERNAME }}"
           Write-Host "Password: ${{ env.RDP_PASSWORD }}"
+          Write-Host "Duration: ${{ inputs.duration || '4' }} hours"
+          Write-Host "=============================="
           
           while ((Get-Date) -lt $endTime) {
             $remaining = $endTime - (Get-Date)
-            Write-Host "Time remaining: $($remaining.Hours)h $($remaining.Minutes)m"
+            Write-Host "Remaining: $($remaining.Hours)h $($remaining.Minutes)m"
             Start-Sleep -Seconds 60
           }
-          
-          Write-Host "Session ended."
 
       - name: Print connection info
         if: always()
         run: |
           Write-Host "=============================="
-          Write-Host "  RDP Connection Info"
+          Write-Host "  RDP Credentials"
           Write-Host "=============================="
-          Write-Host "Tailscale IP: ${{ steps.tailscale.outputs.TS_IP }}"
-          Write-Host "Port: 3389"
           Write-Host "Username: ${{ env.RDP_USERNAME }}"
           Write-Host "Password: ${{ env.RDP_PASSWORD }}"
+          Write-Host "=============================="
+          Write-Host "Check tunnel URL in logs above"
+          Write-Host "Use any RDP client to connect"
           Write-Host "=============================="
