@@ -11,7 +11,6 @@ on:
 env:
   RDP_USERNAME: hkpBHMzC6u9FY
   RDP_PASSWORD: TMq2sbT5GrXNnQ0D1OUa
-  TAILSCALE_PATH: "C:\\Program Files\\Tailscale\\tailscale.exe"
 
 jobs:
   rdp:
@@ -19,86 +18,6 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Download & Install Tailscale
-        run: |
-          Write-Host "Downloading Tailscale..."
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\tailscale-setup.msi"
-          Write-Host "Installing Tailscale..."
-          Start-Process msiexec.exe -ArgumentList "/i $env:TEMP\tailscale-setup.msi /quiet /norestart" -Wait
-          Write-Host "Tailscale installed"
-          
-          # Verify installation
-          if (Test-Path "${{ env.TAILSCALE_PATH }}") {
-            Write-Host "Tailscale CLI found at: ${{ env.TAILSCALE_PATH }}"
-          } else {
-            Write-Host "Tailscale CLI not found, checking other locations..."
-            Get-ChildItem "C:\Program Files\Tailscale" -ErrorAction SilentlyContinue
-            Get-ChildItem "C:\Program Files (x86)\Tailscale" -ErrorAction SilentlyContinue
-          }
-
-      - name: Login Tailscale
-        id: tailscale_login
-        run: |
-          Write-Host "Starting Tailscale login..."
-          
-          # Start tailscale login
-          $process = Start-Process -FilePath "${{ env.TAILSCALE_PATH }}" -ArgumentList "login" -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\tailscale_login.txt" -RedirectStandardError "$env:TEMP\tailscale_error.txt"
-          
-          # Wait a bit for the URL to appear
-          Start-Sleep -Seconds 5
-          
-          # Read output
-          $output = Get-Content "$env:TEMP\tailscale_login.txt" -Raw -ErrorAction SilentlyContinue
-          $error_output = Get-Content "$env:TEMP\tailscale_error.txt" -Raw -ErrorAction SilentlyContinue
-          
-          Write-Host "Output: $output"
-          Write-Host "Error: $error_output"
-          
-          # Extract login URL
-          $fullOutput = "$output $error_output"
-          if ($fullOutput -match "https://login\.tailscale\.com/a/\S+") {
-            $loginUrl = $matches[0]
-            Write-Host ""
-            Write-Host "=============================="
-            Write-Host "LOGIN TAILSCALE"
-            Write-Host "=============================="
-            Write-Host "Buka link ini di browser:"
-            Write-Host $loginUrl
-            Write-Host "=============================="
-            echo "LOGIN_URL=$loginUrl" >> $env:GITHUB_OUTPUT
-          } else {
-            Write-Host "Could not extract login URL from output"
-          }
-          
-          # Wait for process to complete or timeout
-          $timeout = 300  # 5 minutes
-          $elapsed = 0
-          while (!$process.HasExited -and $elapsed -lt $timeout) {
-            Start-Sleep -Seconds 5
-            $elapsed += 5
-            Write-Host "Waiting for auth... ($elapsed/$timeout seconds)"
-          }
-          
-          if ($process.HasExited) {
-            Write-Host "Login process completed with exit code: $($process.ExitCode)"
-          } else {
-            Write-Host "Login timeout, stopping process..."
-            $process.Kill()
-          }
-
-      - name: Get Tailscale IP
-        id: tailscale
-        run: |
-          Start-Sleep -Seconds 3
-          
-          # Get IP using full path
-          $tsIP = & "${{ env.TAILSCALE_PATH }}" ip -4 2>&1
-          Write-Host "Tailscale IPv4: $tsIP"
-          echo "TS_IP=$tsIP" >> $env:GITHUB_OUTPUT
-          
-          # Show status
-          & "${{ env.TAILSCALE_PATH }}" status 2>&1
-
       - name: Create RDP User
         run: |
           $secPassword = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
@@ -113,10 +32,34 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Write-Host "RDP enabled on port 3389"
 
-      - name: Install tools
+      - name: Install Chrome Remote Desktop
         run: |
-          choco install vscode python nodejs-lts 7zip -y --no-progress
-          Write-Host "Tools installed"
+          Write-Host "Downloading Chrome Remote Desktop..."
+          Invoke-WebRequest -Uri "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile "$env:TEMP\chromeremotedesktop.msi"
+          Write-Host "Installing..."
+          Start-Process msiexec.exe -ArgumentList "/i $env:TEMP\chromeremotedesktop.msi /quiet /norestart" -Wait
+          Write-Host "Chrome Remote Desktop installed"
+
+      - name: Setup CRD
+        run: |
+          # Start the service
+          Start-Service "chromeremotedesktophost" -ErrorAction SilentlyContinue
+          
+          # Get machine name
+          $machineName = $env:COMPUTERNAME
+          Write-Host "Machine Name: $machineName"
+          
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "SETUP INSTRUCTIONS"
+          Write-Host "=============================="
+          Write-Host "1. Buka: https://remotedesktop.google.com/access"
+          Write-Host "2. Login Google account kamu"
+          Write-Host "3. Klik 'Set up remote access'"
+          Write-Host "4. Download & install host (if needed)"
+          Write-Host "5. Set PIN: ${{ env.RDP_PASSWORD }}"
+          Write-Host "6. Computer name: $machineName"
+          Write-Host "=============================="
 
       - name: Keep alive
         run: |
@@ -126,8 +69,6 @@ jobs:
           Write-Host "=============================="
           Write-Host "  RDP SERVER RUNNING"
           Write-Host "=============================="
-          Write-Host "Tailscale IP: ${{ steps.tailscale.outputs.TS_IP }}"
-          Write-Host "Port: 3389"
           Write-Host "Username: ${{ env.RDP_USERNAME }}"
           Write-Host "Password: ${{ env.RDP_PASSWORD }}"
           Write-Host "Duration: ${{ inputs.duration || '4' }} hours"
@@ -146,16 +87,23 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=============================="
-          Write-Host "  RDP CONNECTION INFO"
+          Write-Host "  RDP CREDENTIALS"
           Write-Host "=============================="
           Write-Host ""
-          Write-Host "Tailscale IP: ${{ steps.tailscale.outputs.TS_IP }}"
-          Write-Host "Port        : 3389"
-          Write-Host "Username    : ${{ env.RDP_USERNAME }}"
-          Write-Host "Password    : ${{ env.RDP_PASSWORD }}"
+          Write-Host "Username : ${{ env.RDP_USERNAME }}"
+          Write-Host "Password : ${{ env.RDP_PASSWORD }}"
           Write-Host ""
-          Write-Host "Cara connect:"
-          Write-Host "  1. Buka Remote Desktop (mstsc)"
-          Write-Host "  2. Masukkan: ${{ steps.tailscale.outputs.TS_IP }}"
-          Write-Host "  3. Login dengan credentials di atas"
+          Write-Host "=============================="
+          Write-Host "  CARA CONNECT"
+          Write-Host "=============================="
+          Write-Host ""
+          Write-Host "Chrome Remote Desktop:"
+          Write-Host "  1. Buka https://remotedesktop.google.com/access"
+          Write-Host "  2. Login Google account"
+          Write-Host "  3. Klik computer ini"
+          Write-Host ""
+          Write-Host "Atau via Tailscale (kalau install):"
+          Write-Host "  tailscale ip -4"
+          Write-Host "  mstsc <tailscale-ip>"
+          Write-Host ""
           Write-Host "=============================="
