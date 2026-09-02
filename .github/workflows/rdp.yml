@@ -34,7 +34,7 @@ jobs:
 
       - name: Install tools
         run: |
-          choco install googlechrome vscode python nodejs-lts 7zip -y --no-progress
+          choco install vscode python nodejs-lts 7zip -y --no-progress
           Write-Host "Tools installed"
 
       - name: Start RDP tunnel (serveo)

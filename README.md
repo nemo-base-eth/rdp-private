@@ -59,7 +59,6 @@ Semua ini otomatis terinstall saat workflow jalan:
 
 | Software | Kegunaan |
 |----------|----------|
-| **Google Chrome** | Browser web |
 | **VS Code** | Code editor |
 | **Python** | Programming |
 | **Node.js LTS** | JavaScript runtime |
