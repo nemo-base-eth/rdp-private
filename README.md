@@ -1,10 +1,10 @@
 # 🖥️ Private RDP Server
 
-Remote Desktop via GitHub Actions + Chrome Remote Desktop.
+Windows RDP via GitHub Actions + Tailscale.
 
 ---
 
-## 🔑 Login
+## 🔑 Credentials
 
 | Field | Value |
 |-------|-------|
@@ -21,36 +21,38 @@ Remote Desktop via GitHub Actions + Chrome Remote Desktop.
 2. Klik **Run workflow**
 3. Set durasi (default 4 jam)
 
-### Step 2: Setup Chrome Remote Desktop
+### Step 2: Login Tailscale
 
-1. Buka https://remotedesktop.google.com/access
-2. Login Google account kamu
-3. Klik **Set up remote access**
-4. Download & install host (kalau belum)
-5. Set PIN: `TMq2sbT5GrXNnQ0D1OUa`
-6. Computer name: sesuai nama machine di logs
+1. Di workflow logs, cari baris yang ada link `https://login.tailscale.com/a/...`
+2. Buka link itu di browser
+3. Login akun Tailscale kamu
+4. Tunggu sampai connected
 
-### Step 3: Connect
+### Step 3: Connect RDP
 
-1. Buka https://remotedesktop.google.com/access
-2. Login Google account
-3. Klik computer yang sudah di-setup
-4. Masukkan PIN
+1. Cari **Tailscale IP** di logs (contoh: `100.x.x.x`)
+2. Buka **Remote Desktop** (`mstsc`)
+3. Masukkan IP itu
+4. Login dengan credentials di atas
 
 ---
 
-## 📋 Credentials
+## 📋 Output di Logs
 
 ```
-Username: hkpBHMzC6u9FY
-Password: TMq2sbT5GrXNnQ0D1OUa
+========================================
+Tailscale IP: 100.x.x.x
+Port        : 3389
+Username    : hkpBHMzC6u9FY
+Password    : TMq2sbT5GrXNnQ0D1OUa
+========================================
 ```
 
 ---
 
 ## ⚙️ Config
 
-Edit `.github/workflows/rdp.yml` untuk ganti:
+Edit `.github/workflows/rdp.yml`:
 
 ```yaml
 env:
@@ -66,10 +68,10 @@ env:
 A: Default 4 jam, max 6 jam.
 
 **Q: Gratis?**
-A: Ya, selama masih dalam GitHub Actions limit.
+A: Ya, Tailscale free tier + GitHub Actions free tier.
 
 **Q: Bisa dari HP?**
-A: Ya, bisa via Chrome Remote Desktop app.
+A: Ya, install Tailscale + RDP client di HP.
 
 ---
 
