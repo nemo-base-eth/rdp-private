@@ -18,92 +18,112 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Create RDP User
+      - name: Install Tailscale
         run: |
-          $secPassword = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
-          New-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $secPassword -FullName "RDP User" -Description "GitHub Actions RDP" -PasswordNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "${{ env.RDP_USERNAME }}"
-          Write-Host "User created: ${{ env.RDP_USERNAME }}"
+          Write-Host "Downloading Tailscale..."
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
+          Write-Host "Installing..."
+          Start-Process msiexec.exe -ArgumentList "/i $env:TEMP\tailscale.msi /quiet /norestart" -Wait
+          Write-Host "Tailscale installed"
 
-      - name: Enable RDP
+      - name: Tailscale Login
+        id: ts_login
         run: |
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          
+          # Start login
+          Start-Process $ts -ArgumentList "login" -NoNewWindow -RedirectStandardOutput "$env:TEMP\ts_login.txt"
+          
+          # Wait for URL
+          Start-Sleep -Seconds 8
+          
+          $output = Get-Content "$env:TEMP\ts_login.txt" -Raw
+          Write-Host "Output: $output"
+          
+          # Extract URL
+          if ($output -match "https://login\.tailscale\.com/a/\S+") {
+            $url = $matches[0]
+            Write-Host ""
+            Write-Host "========================================"
+            Write-Host "BUKA LINK INI DI BROWSER UNTUK LOGIN:"
+            Write-Host "========================================"
+            Write-Host $url
+            Write-Host "========================================"
+            echo "TS_URL=$url" >> $env:GITHUB_OUTPUT
+          }
+          
+          # Wait for auth
+          Write-Host ""
+          Write-Host "Menunggu auth..."
+          for ($i=0; $i -lt 60; $i++) {
+            $check = & $ts status 2>&1
+            if ($check -match "Connected" -or $check -match "current") {
+              Write-Host "Tailscale connected!"
+              break
+            }
+            Write-Host "Waiting... ($i/60)"
+            Start-Sleep -Seconds 5
+          }
+
+      - name: Get Tailscale IP
+        id: ts_ip
+        run: |
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          Start-Sleep -Seconds 3
+          $ip = & $ts ip -4 2>&1
+          Write-Host "Tailscale IP: $ip"
+          echo "IP=$ip" >> $env:GITHUB_OUTPUT
+          & $ts status
+
+      - name: Create User & Enable RDP
+        run: |
+          # Create user
+          $pass = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
+          New-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $pass -FullName "RDP User" -PasswordNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "${{ env.RDP_USERNAME }}"
+          
+          # Enable RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Write-Host "RDP enabled on port 3389"
-
-      - name: Install Chrome Remote Desktop
-        run: |
-          Write-Host "Downloading Chrome Remote Desktop..."
-          Invoke-WebRequest -Uri "https://dl.google.com/edgedl/chrome-remote-desktop/chromeremotedesktophost.msi" -OutFile "$env:TEMP\chromeremotedesktop.msi"
-          Write-Host "Installing..."
-          Start-Process msiexec.exe -ArgumentList "/i $env:TEMP\chromeremotedesktop.msi /quiet /norestart" -Wait
-          Write-Host "Chrome Remote Desktop installed"
-
-      - name: Setup CRD
-        run: |
-          # Start the service
-          Start-Service "chromeremotedesktophost" -ErrorAction SilentlyContinue
           
-          # Get machine name
-          $machineName = $env:COMPUTERNAME
-          Write-Host "Machine Name: $machineName"
-          
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "SETUP INSTRUCTIONS"
-          Write-Host "=============================="
-          Write-Host "1. Buka: https://remotedesktop.google.com/access"
-          Write-Host "2. Login Google account kamu"
-          Write-Host "3. Klik 'Set up remote access'"
-          Write-Host "4. Download & install host (if needed)"
-          Write-Host "5. Set PIN: ${{ env.RDP_PASSWORD }}"
-          Write-Host "6. Computer name: $machineName"
-          Write-Host "=============================="
+          Write-Host "RDP enabled, user created"
 
       - name: Keep alive
         run: |
-          $duration = [int]("${{ inputs.duration || '4' }}") * 3600
-          $endTime = (Get-Date).AddSeconds($duration)
+          $hrs = [int]("${{ inputs.duration || '4' }}")
+          $end = (Get-Date).AddHours($hrs)
           
-          Write-Host "=============================="
-          Write-Host "  RDP SERVER RUNNING"
-          Write-Host "=============================="
-          Write-Host "Username: ${{ env.RDP_USERNAME }}"
-          Write-Host "Password: ${{ env.RDP_PASSWORD }}"
-          Write-Host "Duration: ${{ inputs.duration || '4' }} hours"
-          Write-Host "=============================="
+          Write-Host "========================================"
+          Write-Host "RDP SERVER RUNNING - $hrs JAM"
+          Write-Host "========================================"
+          Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
+          Write-Host "Port     : 3389"
+          Write-Host "Username : ${{ env.RDP_USERNAME }}"
+          Write-Host "Password : ${{ env.RDP_PASSWORD }}"
+          Write-Host "========================================"
           
-          while ((Get-Date) -lt $endTime) {
-            $remaining = $endTime - (Get-Date)
-            Write-Host "[$(Get-Date -Format 'HH:mm')] Remaining: $($remaining.Hours)h $($remaining.Minutes)m"
+          while ((Get-Date) -lt $end) {
+            $rem = $end - (Get-Date)
+            Write-Host "[$(Get-Date -Format 'HH:mm')] Sisa: $($rem.Hours)j $($rem.Minutes)m"
             Start-Sleep -Seconds 60
           }
-          
-          Write-Host "Session ended."
 
-      - name: Print connection info
+      - name: Output Info
         if: always()
         run: |
           Write-Host ""
-          Write-Host "=============================="
-          Write-Host "  RDP CREDENTIALS"
-          Write-Host "=============================="
-          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "RDP CONNECTION INFO"
+          Write-Host "========================================"
+          Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
+          Write-Host "Port     : 3389"
           Write-Host "Username : ${{ env.RDP_USERNAME }}"
           Write-Host "Password : ${{ env.RDP_PASSWORD }}"
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "  CARA CONNECT"
-          Write-Host "=============================="
-          Write-Host ""
-          Write-Host "Chrome Remote Desktop:"
-          Write-Host "  1. Buka https://remotedesktop.google.com/access"
-          Write-Host "  2. Login Google account"
-          Write-Host "  3. Klik computer ini"
-          Write-Host ""
-          Write-Host "Atau via Tailscale (kalau install):"
-          Write-Host "  tailscale ip -4"
-          Write-Host "  mstsc <tailscale-ip>"
-          Write-Host ""
-          Write-Host "=============================="
+          Write-Host "========================================"
+          Write-Host "Cara connect:"
+          Write-Host "  1. Buka Remote Desktop (mstsc)"
+          Write-Host "  2. Masukkan: ${{ steps.ts_ip.outputs.IP }}"
+          Write-Host "  3. Login: ${{ env.RDP_USERNAME }}"
+          Write-Host "  4. Password: ${{ env.RDP_PASSWORD }}"
+          Write-Host "========================================"
