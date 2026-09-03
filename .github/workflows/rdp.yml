@@ -7,6 +7,14 @@ on:
         description: 'Run duration (hours)'
         required: false
         default: '4'
+      rdp_user:
+        description: 'RDP username (kosong = pakai secret RDP_USERNAME)'
+        required: false
+        default: ''
+      rdp_pass:
+        description: 'RDP password min 8 char (kosong = pakai secret RDP_PASSWORD)'
+        required: false
+        default: ''
 
 # Manual login version: no TS_AUTHKEY needed.
 # You open the https://login.tailscale.com/a/... link in your browser.
@@ -211,24 +219,39 @@ jobs:
           "IP=$ip" >> $env:GITHUB_OUTPUT
 
       - name: Create User & Enable RDP
+        id: create
         shell: pwsh
         run: |
-          if (-not "${{ env.RDP_USERNAME }}" -or -not "${{ env.RDP_PASSWORD }}") {
-            Write-Error "RDP_USERNAME / RDP_PASSWORD secrets kosong. Isi di Settings -> Secrets -> Actions."
+          $u = "${{ github.event.inputs.rdp_user }}".Trim()
+          if (-not $u) { $u = $env:RDP_USERNAME }
+          $p = "${{ github.event.inputs.rdp_pass }}"
+          if (-not $p) { $p = $env:RDP_PASSWORD }
+          $uLen = if ($u) { $u.Length } else { 0 }
+          $pLen = if ($p) { $p.Length } else { 0 }
+          Write-Host "user len: $uLen, pass len: $pLen"
+          if (-not $u -or -not $p) {
+            Write-Error "RDP user/pass KOSONG. Isi pas Run workflow (rdp_user/rdp_pass) ATAU set Secrets: repo Settings -> Secrets and variables -> Actions -> New secret: RDP_USERNAME, RDP_PASSWORD. Lalu re-run."
             exit 1
           }
-          $pass = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
+          if ($pLen -lt 8) {
+            Write-Error "Password min 8 char (Windows policy). Ganti yg panjang."
+            exit 1
+          }
+          $pass = ConvertTo-SecureString $p -AsPlainText -Force
           try {
-            New-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $pass -FullName "RDP User" -PasswordNeverExpires -ErrorAction Stop
+            New-LocalUser -Name $u -Password $pass -FullName "RDP User" -PasswordNeverExpires -ErrorAction Stop
           } catch {
             Write-Host "User exists, updating password..."
-            Set-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $pass
+            Set-LocalUser -Name $u -Password $pass
           }
-          Add-LocalGroupMember -Group "Administrators" -Member "${{ env.RDP_USERNAME }}" -ErrorAction SilentlyContinue
+          $global:LASTEXITCODE = 0
+          Add-LocalGroupMember -Group "Administrators" -Member $u -ErrorAction SilentlyContinue
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Write-Host "RDP enabled, user created"
+          $global:LASTEXITCODE = 0
+          Write-Host "RDP enabled, user created: $u"
+          "USER=$u" >> $env:GITHUB_OUTPUT
 
       - name: Keep alive
         shell: pwsh
@@ -242,7 +265,7 @@ jobs:
           Write-Host "========================================"
           Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
           Write-Host "Port     : 3389"
-          Write-Host "Username : (from secrets, not printed)"
+          Write-Host "Username : ${{ steps.create.outputs.USER }}"
           Write-Host "========================================"
           while ((Get-Date) -lt $end) {
             $rem = $end - (Get-Date)
@@ -260,10 +283,10 @@ jobs:
           Write-Host "========================================"
           Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
           Write-Host "Port     : 3389"
-          Write-Host "Username : (see secrets RDP_USERNAME)"
+          Write-Host "Username : ${{ steps.create.outputs.USER }}"
           Write-Host "========================================"
           Write-Host "Cara connect:"
           Write-Host "  1. Tailscale di laptop/HP login akun sama"
           Write-Host "  2. mstsc -> ${{ steps.ts_ip.outputs.IP }}"
-          Write-Host "  3. Login dgn user dari secrets"
+          Write-Host "  3. Login dgn user di atas"
           Write-Host "========================================"
