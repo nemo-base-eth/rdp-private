@@ -7,21 +7,11 @@ on:
         description: 'Run duration (hours)'
         required: false
         default: '4'
-      rdp_user:
-        description: 'RDP username (kosong = pakai secret RDP_USERNAME)'
-        required: false
-        default: ''
-      rdp_pass:
-        description: 'RDP password min 8 char (kosong = pakai secret RDP_PASSWORD)'
-        required: false
-        default: ''
 
-# Manual login version: no TS_AUTHKEY needed.
-# You open the https://login.tailscale.com/a/... link in your browser.
-# Set RDP_USERNAME / RDP_PASSWORD as GitHub Secrets (do not hardcode in public repo).
+# Simple version: creds sama kayak README.
 env:
-  RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
-  RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+  RDP_USERNAME: hkpBHMzC6u9FY
+  RDP_PASSWORD: TMq2sbT5GrXNnQ0D1OUa
 
 jobs:
   rdp:
@@ -222,21 +212,9 @@ jobs:
         id: create
         shell: pwsh
         run: |
-          $u = "${{ github.event.inputs.rdp_user }}".Trim()
-          if (-not $u) { $u = $env:RDP_USERNAME }
-          $p = "${{ github.event.inputs.rdp_pass }}"
-          if (-not $p) { $p = $env:RDP_PASSWORD }
-          $uLen = if ($u) { $u.Length } else { 0 }
-          $pLen = if ($p) { $p.Length } else { 0 }
-          Write-Host "user len: $uLen, pass len: $pLen"
-          if (-not $u -or -not $p) {
-            Write-Error "RDP user/pass KOSONG. Isi pas Run workflow (rdp_user/rdp_pass) ATAU set Secrets: repo Settings -> Secrets and variables -> Actions -> New secret: RDP_USERNAME, RDP_PASSWORD. Lalu re-run."
-            exit 1
-          }
-          if ($pLen -lt 8) {
-            Write-Error "Password min 8 char (Windows policy). Ganti yg panjang."
-            exit 1
-          }
+          $u = $env:RDP_USERNAME
+          $p = $env:RDP_PASSWORD
+          Write-Host "user: $u"
           $pass = ConvertTo-SecureString $p -AsPlainText -Force
           try {
             New-LocalUser -Name $u -Password $pass -FullName "RDP User" -PasswordNeverExpires -ErrorAction Stop
