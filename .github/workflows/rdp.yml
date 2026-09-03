@@ -8,9 +8,12 @@ on:
         required: false
         default: '4'
 
+# Manual login version: no TS_AUTHKEY needed.
+# You open the https://login.tailscale.com/a/... link in your browser.
+# Set RDP_USERNAME / RDP_PASSWORD as GitHub Secrets (do not hardcode in public repo).
 env:
-  RDP_USERNAME: hkpBHMzC6u9FY
-  RDP_PASSWORD: TMq2sbT5GrXNnQ0D1OUa
+  RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
+  RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
 
 jobs:
   rdp:
@@ -19,99 +22,229 @@ jobs:
 
     steps:
       - name: Install Tailscale
+        shell: pwsh
         run: |
           Write-Host "Downloading Tailscale..."
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
           Write-Host "Installing..."
-          Start-Process msiexec.exe -ArgumentList "/i $env:TEMP\tailscale.msi /quiet /norestart" -Wait
-          Write-Host "Tailscale installed"
+          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\tailscale.msi`" /quiet /norestart" -Wait
+          Write-Host "MSI exit done, waiting for service..."
+          Start-Sleep -Seconds 30
 
-      - name: Tailscale Login
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          if (-not (Test-Path $ts)) {
+            Write-Host "Not found at default path, searching..."
+            $found = (where.exe tailscale 2>$null | Select-Object -First 1)
+            Write-Host "where.exe result: $found"
+            if ($found) { $ts = $found.Trim() }
+          }
+          if (-not (Test-Path $ts)) {
+            Write-Error "tailscale.exe not found after install. MSI failed."
+            exit 1
+          }
+          Write-Host "tailscale.exe at: $ts"
+          & $ts version
+          Get-Service Tailscale -ErrorAction SilentlyContinue | Format-List Name, Status
+          try { Start-Service Tailscale -ErrorAction SilentlyContinue } catch {}
+          Start-Sleep -Seconds 5
+          & $ts status 2>&1 | Select-Object -First 20
+          Write-Host "Tailscale installed and service ready"
+
+      - name: Tailscale Login (manual)
         id: ts_login
+        shell: pwsh
         run: |
           $ts = "C:\Program Files\Tailscale\tailscale.exe"
-          
-          # Run login and capture output
+          if (-not (Test-Path $ts)) {
+            $found = (where.exe tailscale 2>$null | Select-Object -First 1)
+            if ($found) { $ts = $found.Trim() }
+          }
+          Write-Host "Using: $ts"
+          & $ts version
+
+          $outFile = "$env:TEMP\ts_out.txt"
+          $errFile = "$env:TEMP\ts_err.txt"
+          Remove-Item $outFile -ErrorAction SilentlyContinue
+          Remove-Item $errFile -ErrorAction SilentlyContinue
+          New-Item -ItemType File -Path $outFile -Force | Out-Null
+          New-Item -ItemType File -Path $errFile -Force | Out-Null
+
           Write-Host "Starting Tailscale login..."
-          $login = Start-Process $ts -ArgumentList "login" -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\ts_out.txt" -RedirectStandardError "$env:TEMP\ts_err.txt"
-          
-          # Wait for URL to appear
-          Start-Sleep -Seconds 10
-          
-          $out = Get-Content "$env:TEMP\ts_out.txt" -Raw -ErrorAction SilentlyContinue
-          $err = Get-Content "$env:TEMP\ts_err.txt" -Raw -ErrorAction SilentlyContinue
-          
-          Write-Host "stdout: $out"
-          Write-Host "stderr: $err"
-          
-          # Try extract URL from both
-          $combined = "$out $err"
-          if ($combined -match "https://login\.tailscale\.com/a/[^\s]+") {
-            $url = $matches[0]
+          $login = Start-Process $ts -ArgumentList "login" -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+
+          # Poll up to 90s for the login URL (fixes empty stdout/stderr on first read).
+          $url = $null
+          for ($i = 1; $i -le 18; $i++) {
+            Start-Sleep -Seconds 5
+            $out = ""
+            $err = ""
+            try { $out = Get-Content $outFile -Raw -ErrorAction SilentlyContinue } catch {}
+            try { $err = Get-Content $errFile -Raw -ErrorAction SilentlyContinue } catch {}
+            $lenOut = if ($out) { $out.Length } else { 0 }
+            $lenErr = if ($err) { $err.Length } else { 0 }
+            $exited = $login.HasExited
+            Write-Host "[$i/18] out=${lenOut}b err=${lenErr}b exited=${exited}"
+            if ($out) { Write-Host "stdout-so-far: $out" }
+            if ($err) { Write-Host "stderr-so-far: $err" }
+
+            $combined = "$out $err"
+            if ($combined -match 'https://login\.tailscale\.com/a/[^\s''"]+') {
+              $url = $matches[0]
+              break
+            }
+            if ($exited -and $lenOut -eq 0 -and $lenErr -eq 0 -and $i -ge 3) {
+              Write-Host "Process exited early with no output, will try fallback..."
+              break
+            }
+          }
+
+          # Fallback: some client versions print the URL via `tailscale up`, not `login`.
+          if (-not $url) {
+            Write-Host ""
+            Write-Host "No URL from 'login', trying fallback 'tailscale up'..."
+            try { Stop-Process -Id $login.Id -Force -ErrorAction SilentlyContinue } catch {}
+            Remove-Item $outFile -ErrorAction SilentlyContinue
+            Remove-Item $errFile -ErrorAction SilentlyContinue
+            $login2 = Start-Process $ts -ArgumentList "up" -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+            for ($i = 1; $i -le 12; $i++) {
+              Start-Sleep -Seconds 5
+              $out = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+              $err = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
+              Write-Host "fallback [$i/12] stdout: $out"
+              Write-Host "fallback [$i/12] stderr: $err"
+              $combined = "$out $err"
+              if ($combined -match 'https://login\.tailscale\.com/a/[^\s''"]+') {
+                $url = $matches[0]
+                $login = $login2
+                break
+              }
+              if ($login2.HasExited) { break }
+            }
+            if (-not $url -and -not $login2.HasExited) { $login = $login2 }
+          }
+
+          if ($url) {
             Write-Host ""
             Write-Host "========================================"
             Write-Host "BUKA LINK INI DI BROWSER:"
             Write-Host "========================================"
             Write-Host $url
             Write-Host "========================================"
-            echo "TS_URL=$url" >> $env:GITHUB_OUTPUT
+            "TS_URL=$url" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host ""
+            Write-Host "GAGAL dapat URL login. Full dump:"
+            Write-Host "--- stdout ---"
+            Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+            Write-Host "--- stderr ---"
+            Get-Content $errFile -Raw -ErrorAction SilentlyContinue
+            Write-Host "--- status ---"
+            & $ts status 2>&1
+            Write-Error "No login URL. Service blm ready atau client berubah. Re-run workflow."
+            exit 1
           }
-          
-          # Wait for login process to finish (user auth)
+
+          # Wait for user to finish browser auth (max ~10 min), poll status.
           Write-Host ""
-          Write-Host "Menunggu kamu login..."
-          $login.WaitForExit(300000)  # 5 min max
-          Write-Host "Login process selesai, exit code: $($login.ExitCode)"
+          Write-Host "Menunggu kamu login di browser..."
+          $deadline = (Get-Date).AddMinutes(10)
+          $loggedIn = $false
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 15
+            $ipTry = (& $ts ip -4 2>$null | Select-Object -First 1)
+            if ($ipTry -and $ipTry -match '^100\.') {
+              Write-Host "Logged in! IP: $ipTry"
+              $loggedIn = $true
+              break
+            }
+            if ($login.HasExited) {
+              Write-Host "Login process exited (code $($login.ExitCode)), cek status..."
+              $st = (& $ts status 2>&1 | Out-String)
+              Write-Host $st
+              $ipTry2 = (& $ts ip -4 2>$null | Select-Object -First 1)
+              if ($ipTry2 -and $ipTry2 -match '^100\.') {
+                Write-Host "Logged in! IP: $ipTry2"
+                $loggedIn = $true
+                break
+              }
+            }
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] blm login, nunggu..."
+          }
+          if (-not $loggedIn) {
+            Write-Error "Timeout 10 mnt, kamu blm login. Re-run workflow."
+            exit 1
+          }
+          Write-Host "Login process selesai."
 
       - name: Get Tailscale IP
         id: ts_ip
+        shell: pwsh
         run: |
           $ts = "C:\Program Files\Tailscale\tailscale.exe"
-          
+          if (-not (Test-Path $ts)) {
+            $found = (where.exe tailscale 2>$null | Select-Object -First 1)
+            if ($found) { $ts = $found.Trim() }
+          }
           Write-Host "Checking Tailscale status..."
           & $ts status
-          
-          Start-Sleep -Seconds 3
-          $ip = & $ts ip -4 2>&1
+          $ip = ""
+          for ($i = 1; $i -le 6; $i++) {
+            $ip = (& $ts ip -4 2>$null | Select-Object -First 1)
+            if ($ip) { $ip = $ip.Trim() }
+            if ($ip -match '^100\.') { break }
+            Write-Host "retry $i/6..."
+            Start-Sleep -Seconds 5
+          }
+          if (-not $ip) {
+            Write-Error "Tailscale IP not found. Kamu blm login?"
+            exit 1
+          }
           Write-Host "Tailscale IP: $ip"
-          echo "IP=$ip" >> $env:GITHUB_OUTPUT
+          "IP=$ip" >> $env:GITHUB_OUTPUT
 
       - name: Create User & Enable RDP
+        shell: pwsh
         run: |
-          # Create user
+          if (-not "${{ env.RDP_USERNAME }}" -or -not "${{ env.RDP_PASSWORD }}") {
+            Write-Error "RDP_USERNAME / RDP_PASSWORD secrets kosong. Isi di Settings -> Secrets -> Actions."
+            exit 1
+          }
           $pass = ConvertTo-SecureString "${{ env.RDP_PASSWORD }}" -AsPlainText -Force
-          New-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $pass -FullName "RDP User" -PasswordNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "${{ env.RDP_USERNAME }}"
-          
-          # Enable RDP
+          try {
+            New-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $pass -FullName "RDP User" -PasswordNeverExpires -ErrorAction Stop
+          } catch {
+            Write-Host "User exists, updating password..."
+            Set-LocalUser -Name "${{ env.RDP_USERNAME }}" -Password $pass
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member "${{ env.RDP_USERNAME }}" -ErrorAction SilentlyContinue
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          
           Write-Host "RDP enabled, user created"
 
       - name: Keep alive
+        shell: pwsh
         run: |
-          $hrs = [int]("${{ inputs.duration || '4' }}")
+          $hrsRaw = "${{ github.event.inputs.duration }}"
+          if (-not $hrsRaw) { $hrsRaw = "4" }
+          $hrs = [int]$hrsRaw
           $end = (Get-Date).AddHours($hrs)
-          
           Write-Host "========================================"
           Write-Host "RDP SERVER RUNNING - $hrs JAM"
           Write-Host "========================================"
           Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
           Write-Host "Port     : 3389"
-          Write-Host "Username : ${{ env.RDP_USERNAME }}"
-          Write-Host "Password : ${{ env.RDP_PASSWORD }}"
+          Write-Host "Username : (from secrets, not printed)"
           Write-Host "========================================"
-          
           while ((Get-Date) -lt $end) {
             $rem = $end - (Get-Date)
-            Write-Host "[$(Get-Date -Format 'HH:mm')] Sisa: $($rem.Hours)j $($rem.Minutes)m"
-            Start-Sleep -Seconds 60
+            Write-Host "[$(Get-Date -Format 'HH:mm')] Sisa: $($rem.Hours)j $($rem.Minutes)m | IP: ${{ steps.ts_ip.outputs.IP }}"
+            Start-Sleep -Seconds 300
           }
 
       - name: Output Info
         if: always()
+        shell: pwsh
         run: |
           Write-Host ""
           Write-Host "========================================"
@@ -119,12 +252,10 @@ jobs:
           Write-Host "========================================"
           Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
           Write-Host "Port     : 3389"
-          Write-Host "Username : ${{ env.RDP_USERNAME }}"
-          Write-Host "Password : ${{ env.RDP_PASSWORD }}"
+          Write-Host "Username : (see secrets RDP_USERNAME)"
           Write-Host "========================================"
           Write-Host "Cara connect:"
-          Write-Host "  1. Buka Remote Desktop (mstsc)"
-          Write-Host "  2. Masukkan: ${{ steps.ts_ip.outputs.IP }}"
-          Write-Host "  3. Login: ${{ env.RDP_USERNAME }}"
-          Write-Host "  4. Password: ${{ env.RDP_PASSWORD }}"
+          Write-Host "  1. Tailscale di laptop/HP login akun sama"
+          Write-Host "  2. mstsc -> ${{ steps.ts_ip.outputs.IP }}"
+          Write-Host "  3. Login dgn user dari secrets"
           Write-Host "========================================"
