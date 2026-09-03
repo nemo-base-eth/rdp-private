@@ -44,10 +44,12 @@ jobs:
           }
           Write-Host "tailscale.exe at: $ts"
           & $ts version
+          $global:LASTEXITCODE = 0
           Get-Service Tailscale -ErrorAction SilentlyContinue | Format-List Name, Status
           try { Start-Service Tailscale -ErrorAction SilentlyContinue } catch {}
           Start-Sleep -Seconds 5
           & $ts status 2>&1 | Select-Object -First 20
+          $global:LASTEXITCODE = 0
           Write-Host "Tailscale installed and service ready"
 
       - name: Tailscale Login (manual)
@@ -152,6 +154,7 @@ jobs:
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 15
             $ipTry = (& $ts ip -4 2>$null | Select-Object -First 1)
+            $global:LASTEXITCODE = 0
             if ($ipTry -and $ipTry -match '^100\.') {
               Write-Host "Logged in! IP: $ipTry"
               $loggedIn = $true
@@ -160,8 +163,10 @@ jobs:
             if ($login.HasExited) {
               Write-Host "Login process exited (code $($login.ExitCode)), cek status..."
               $st = (& $ts status 2>&1 | Out-String)
+              $global:LASTEXITCODE = 0
               Write-Host $st
               $ipTry2 = (& $ts ip -4 2>$null | Select-Object -First 1)
+              $global:LASTEXITCODE = 0
               if ($ipTry2 -and $ipTry2 -match '^100\.') {
                 Write-Host "Logged in! IP: $ipTry2"
                 $loggedIn = $true
@@ -174,6 +179,7 @@ jobs:
             Write-Error "Timeout 10 mnt, kamu blm login. Re-run workflow."
             exit 1
           }
+          $global:LASTEXITCODE = 0
           Write-Host "Login process selesai."
 
       - name: Get Tailscale IP
@@ -186,10 +192,12 @@ jobs:
             if ($found) { $ts = $found.Trim() }
           }
           Write-Host "Checking Tailscale status..."
-          & $ts status
+          & $ts status 2>&1
+          $global:LASTEXITCODE = 0
           $ip = ""
           for ($i = 1; $i -le 6; $i++) {
             $ip = (& $ts ip -4 2>$null | Select-Object -First 1)
+            $global:LASTEXITCODE = 0
             if ($ip) { $ip = $ip.Trim() }
             if ($ip -match '^100\.') { break }
             Write-Host "retry $i/6..."
