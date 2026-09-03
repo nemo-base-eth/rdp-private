@@ -8,8 +8,8 @@ Windows RDP via GitHub Actions + Tailscale.
 
 | Field | Value |
 |-------|-------|
-| **Username** | `hkpBHMzC6u9FY` |
-| **Password** | `TMq2sbT5GrXNnQ0D1OUa` |
+| **Username** | `hkpBHMzC6u9FY` (tetap) |
+| **Password** | random tiap run, liat di logs blok `RDP SIAP` |
 
 ---
 
@@ -30,10 +30,10 @@ Windows RDP via GitHub Actions + Tailscale.
 
 ### Step 3: Connect RDP
 
-1. Cari **Tailscale IP** di logs (contoh: `100.x.x.x`)
+1. Cari **Tailscale IP + password** di logs blok `RDP SIAP` (contoh: `100.x.x.x`)
 2. Buka **Remote Desktop** (`mstsc`)
 3. Masukkan IP itu
-4. Login dengan credentials di atas
+4. Login dengan username tetap + password random dari logs itu
 
 ---
 
@@ -41,10 +41,10 @@ Windows RDP via GitHub Actions + Tailscale.
 
 ```
 ========================================
-Tailscale IP: 100.x.x.x
-Port        : 3389
-Username    : hkpBHMzC6u9FY
-Password    : TMq2sbT5GrXNnQ0D1OUa
+RDP SIAP
+IP       : 100.x.x.x
+Username : hkpBHMzC6u9FY
+Password : random-16-char
 ========================================
 ```
 
@@ -52,13 +52,14 @@ Password    : TMq2sbT5GrXNnQ0D1OUa
 
 ## ⚙️ Config
 
-Edit `.github/workflows/rdp.yml`:
+Username tetap di `.github/workflows/rdp.yml`:
 
 ```yaml
 env:
-  RDP_USERNAME: username_baru
-  RDP_PASSWORD: password_baru
+  RDP_USERNAME: hkpBHMzC6u9FY
 ```
+
+Password auto-random 16 char tiap run (huruf+angka+`!@#`).
 
 ---
 
