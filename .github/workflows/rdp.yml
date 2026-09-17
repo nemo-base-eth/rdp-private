@@ -79,19 +79,34 @@ jobs:
         shell: pwsh
         run: |
           $u = $env:RDP_USERNAME
-          $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#' -split ''
-          $p = -join (1..16 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Count)] })
-          net user $u $p /add 2>$null
-          net localgroup Administrators $u /add 2>$null
-          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -PropertyType DWORD -Force 2>$null
-          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' 2>$null
-          "PASS=$p" >> $env:GITHUB_OUTPUT
+          $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
+          $lower = 'abcdefghijkmnopqrstuvwxyz'
+          $digits = '23456789'
+          $all = $upper + $lower + $digits + '!@#'
+          $chars = @(
+            $upper[(Get-Random -Maximum $upper.Length)]
+            $lower[(Get-Random -Maximum $lower.Length)]
+            $lower[(Get-Random -Maximum $lower.Length)]
+            $lower[(Get-Random -Maximum $lower.Length)]
+            $digits[(Get-Random -Maximum $digits.Length)]
+          )
+          $pass = -join $chars
+          try {
+            New-LocalUser -Name $u -Password (ConvertTo-SecureString $pass -AsPlainText -Force) -FullName "RDP User" -PasswordNeverExpires -ErrorAction Stop | Out-Null
+          } catch {
+            Set-LocalUser -Name $u -Password (ConvertTo-SecureString $pass -AsPlainText -Force)
+          }
+          Add-LocalGroupMember -Group "Administrators" -Member $u -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' | Out-Null
+          $global:LASTEXITCODE = 0
+          "PASS=$pass" >> $env:GITHUB_OUTPUT
 
       - name: Output
         shell: pwsh
         run: |
-          $ip = (Get-Content "$env:GITHUB_OUTPUT" | Where-Object { $_ -match '^IP=' }) -replace '^IP=',''
-          $pass = (Get-Content "$env:GITHUB_OUTPUT" | Where-Object { $_ -match '^PASS=' }) -replace '^PASS=',''
+          $ip = "${{ steps.ts_ip.outputs.IP }}"
+          $pass = "${{ steps.create.outputs.PASS }}"
           Write-Host ""
           Write-Host "========================================"
           Write-Host "IP    : $ip"
