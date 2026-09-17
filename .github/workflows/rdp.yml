@@ -34,7 +34,6 @@ jobs:
           Write-Host "Tailscale ready"
 
       - name: Tailscale Login
-        id: ts_login
         shell: pwsh
         run: |
           $ts = "C:\Program Files\Tailscale\tailscale.exe"
@@ -44,51 +43,16 @@ jobs:
           }
           if (-not (Test-Path $ts)) { Write-Error "tailscale not found"; exit 1 }
 
-          # Capture output via System.Diagnostics.Process
-          $proc = New-Object System.Diagnostics.Process
-          $proc.StartInfo.FileName = $ts
-          $proc.StartInfo.Arguments = "login"
-          $proc.StartInfo.UseShellExecute = $false
-          $proc.StartInfo.RedirectStandardOutput = $true
-          $proc.StartInfo.RedirectStandardError = $true
-          $proc.StartInfo.CreateNoWindow = $true
-          $proc.Start() | Out-Null
-
-          $url = $null
-          $deadline = (Get-Date).AddSeconds(120)
-          while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
-            $out = $proc.StandardOutput.ReadLine()
-            if ($out -and $out -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
-            $err = $proc.StandardError.ReadLine()
-            if ($err -and $err -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
+          $authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
+          if (-not $authKey) {
+            Write-Error "Set TAILSCALE_AUTH_KEY secret in repo settings"
+            exit 1
           }
 
-          # Fallback: tailscale up
-          if (-not $url) {
-            try { $proc.Kill() } catch {}
-            $proc2 = New-Object System.Diagnostics.Process
-            $proc2.StartInfo.FileName = $ts
-            $proc2.StartInfo.Arguments = "up"
-            $proc2.StartInfo.UseShellExecute = $false
-            $proc2.StartInfo.RedirectStandardOutput = $true
-            $proc2.StartInfo.RedirectStandardError = $true
-            $proc2.StartInfo.CreateNoWindow = $true
-            $proc2.Start() | Out-Null
-            $deadline2 = (Get-Date).AddSeconds(90)
-            while ((Get-Date) -lt $deadline2 -and -not $proc2.HasExited) {
-              $out = $proc2.StandardOutput.ReadLine()
-              if ($out -and $out -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
-              $err = $proc2.StandardError.ReadLine()
-              if ($err -and $err -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
-            }
-            try { if (-not $proc2.HasExited) { $proc2.Kill() } } catch {}
-          } else {
-            try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
-          }
-
-          if (-not $url) { Write-Error "URL tidak ketemu. Re-run."; exit 1 }
-          Write-Host "LOGIN: $url"
-          "TS_URL=$url" >> $env:GITHUB_OUTPUT
+          & $ts up --authkey="$authKey"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Tailscale auth failed"; exit 1 }
+          Write-Host "Tailscale connected"
+          $global:LASTEXITCODE = 0
 
       - name: Get Tailscale IP
         id: ts_ip
@@ -100,64 +64,47 @@ jobs:
             if ($found) { $ts = $found.Trim() }
           }
           $ip = ""
-          for ($i = 1; $i -le 6; $i++) {
+          for ($i = 1; $i -le 10; $i++) {
             $ip = (& $ts ip -4 2>$null | Select-Object -First 1)
             $global:LASTEXITCODE = 0
             if ($ip) { $ip = $ip.Trim() }
             if ($ip -match '^100\.') { break }
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 3
           }
           if (-not $ip) { Write-Error "IP tidak ketemu"; exit 1 }
           "IP=$ip" >> $env:GITHUB_OUTPUT
 
-      - name: Create User & Enable RDP
+      - name: Create User
         id: create
         shell: pwsh
         run: |
           $u = $env:RDP_USERNAME
-          $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
-          $lower = 'abcdefghijkmnopqrstuvwxyz'
-          $digits = '23456789'
-          $all = $upper + $lower + $digits + '!@#'
-          $chars = @(
-            $upper[(Get-Random -Maximum $upper.Length)]
-            $lower[(Get-Random -Maximum $lower.Length)]
-            $digits[(Get-Random -Maximum $digits.Length)]
-          ) + ((1..13) | ForEach-Object { $all[(Get-Random -Maximum $all.Length)] })
-          $p = ($chars | Sort-Object { Get-Random }) -join ''
-          $pass = ConvertTo-SecureString $p -AsPlainText -Force
-          try {
-            New-LocalUser -Name $u -Password $pass -FullName "RDP User" -PasswordNeverExpires -ErrorAction Stop | Out-Null
-          } catch {
-            Set-LocalUser -Name $u -Password $pass
-          }
-          $global:LASTEXITCODE = 0
-          Add-LocalGroupMember -Group "Administrators" -Member $u -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
-          $global:LASTEXITCODE = 0
-          "USER=$u" >> $env:GITHUB_OUTPUT
+          $chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#' -split ''
+          $p = -join (1..16 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Count)] })
+          net user $u $p /add 2>$null
+          net localgroup Administrators $u /add 2>$null
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -PropertyType DWORD -Force 2>$null
+          Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' 2>$null
           "PASS=$p" >> $env:GITHUB_OUTPUT
 
       - name: Output
         shell: pwsh
         run: |
+          $ip = (Get-Content "$env:GITHUB_OUTPUT" | Where-Object { $_ -match '^IP=' }) -replace '^IP=',''
+          $pass = (Get-Content "$env:GITHUB_OUTPUT" | Where-Object { $_ -match '^PASS=' }) -replace '^PASS=',''
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "LOGIN : ${{ steps.ts_login.outputs.TS_URL }}"
-          Write-Host "IP    : ${{ steps.ts_ip.outputs.IP }}"
+          Write-Host "IP    : $ip"
           Write-Host "PORT  : 3389"
-          Write-Host "USER  : ${{ steps.create.outputs.USER }}"
-          Write-Host "PASS  : ${{ steps.create.outputs.PASS }}"
+          Write-Host "USER  : $env:RDP_USERNAME"
+          Write-Host "PASS  : $pass"
           Write-Host "========================================"
 
       - name: Keep alive
         shell: pwsh
         run: |
-          $hrsRaw = "${{ github.event.inputs.duration }}"
-          if (-not $hrsRaw) { $hrsRaw = "4" }
-          $hrs = [int]$hrsRaw
+          $hrs = [int]("${{ github.event.inputs.duration }}" -replace '[^0-9]','')
+          if ($hrs -lt 1) { $hrs = 4 }
           $end = (Get-Date).AddHours($hrs)
           while ((Get-Date) -lt $end) {
             Start-Sleep -Seconds 1800
