@@ -9,44 +9,31 @@ Windows RDP via GitHub Actions + Tailscale.
 | Field | Value |
 |-------|-------|
 | **Username** | `hkpBHMzC6u9FY` (tetap) |
-| **Password** | random tiap run, liat di logs blok `RDP SIAP` |
+| **Password** | random tiap run, lihat di logs |
 
 ---
 
 ## 🚀 Cara Pakai
 
-### Step 1: Run Workflow
+### Step 1: Setup Auth Key (1x saja)
+
+1. Buka https://login.tailscale.com/admin/settings/keys
+2. Generate **pre-auth key** (Reusable + Ephemeral)
+3. Buka repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+4. Name: `TAILSCALE_AUTH_KEY` → paste key
+
+### Step 2: Run Workflow
 
 1. Buka repo → **Actions** → **RDP Server**
 2. Klik **Run workflow**
 3. Set durasi (default 4 jam)
 
-### Step 2: Login Tailscale
-
-1. Di workflow logs, cari baris yang ada link `https://login.tailscale.com/a/...`
-2. Buka link itu di browser
-3. Login akun Tailscale kamu
-4. Tunggu sampai connected
-
 ### Step 3: Connect RDP
 
-1. Cari **Tailscale IP + password** di logs blok `RDP SIAP` (contoh: `100.x.x.x`)
+1. Lihat IP + password di logs blok output
 2. Buka **Remote Desktop** (`mstsc`)
-3. Masukkan IP itu
-4. Login dengan username tetap + password random dari logs itu
-
----
-
-## 📋 Output di Logs
-
-```
-========================================
-RDP SIAP
-IP       : 100.x.x.x
-Username : hkpBHMzC6u9FY
-Password : random-16-char
-========================================
-```
+3. Masukkan IP:3389
+4. Login dengan username + password dari logs
 
 ---
 
@@ -59,7 +46,7 @@ env:
   RDP_USERNAME: hkpBHMzC6u9FY
 ```
 
-Password auto-random 16 char tiap run (huruf+angka+`!@#`).
+Password auto-random 16 char tiap run.
 
 ---
 
