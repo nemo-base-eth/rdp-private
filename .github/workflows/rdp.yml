@@ -8,7 +8,6 @@ on:
         required: false
         default: '4'
 
-# Username tetap, password random tiap run.
 env:
   RDP_USERNAME: hkpBHMzC6u9FY
 
@@ -34,7 +33,7 @@ jobs:
           $global:LASTEXITCODE = 0
           Write-Host "Tailscale ready"
 
-      - name: Tailscale Login (manual)
+      - name: Tailscale Login
         id: ts_login
         shell: pwsh
         run: |
@@ -43,52 +42,53 @@ jobs:
             $found = (where.exe tailscale 2>$null | Select-Object -First 1)
             if ($found) { $ts = $found.Trim() }
           }
-          $outFile = "$env:TEMP\ts_out.txt"
-          $errFile = "$env:TEMP\ts_err.txt"
-          Remove-Item $outFile -ErrorAction SilentlyContinue
-          Remove-Item $errFile -ErrorAction SilentlyContinue
-          $login = Start-Process $ts -ArgumentList "login" -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+          if (-not (Test-Path $ts)) { Write-Error "tailscale not found"; exit 1 }
+
+          # Capture output via System.Diagnostics.Process
+          $proc = New-Object System.Diagnostics.Process
+          $proc.StartInfo.FileName = $ts
+          $proc.StartInfo.Arguments = "login"
+          $proc.StartInfo.UseShellExecute = $false
+          $proc.StartInfo.RedirectStandardOutput = $true
+          $proc.StartInfo.RedirectStandardError = $true
+          $proc.StartInfo.CreateNoWindow = $true
+          $proc.Start() | Out-Null
+
           $url = $null
-          for ($i = 1; $i -le 18; $i++) {
-            Start-Sleep -Seconds 5
-            $out = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
-            $err = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-            $combined = "$out $err"
-            if ($combined -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
-            if ($login.HasExited -and (-not $out) -and (-not $err) -and $i -ge 3) { break }
+          $deadline = (Get-Date).AddSeconds(120)
+          while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
+            $out = $proc.StandardOutput.ReadLine()
+            if ($out -and $out -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
+            $err = $proc.StandardError.ReadLine()
+            if ($err -and $err -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
           }
+
+          # Fallback: tailscale up
           if (-not $url) {
-            try { Stop-Process -Id $login.Id -Force -ErrorAction SilentlyContinue } catch {}
-            Remove-Item $outFile -ErrorAction SilentlyContinue
-            Remove-Item $errFile -ErrorAction SilentlyContinue
-            $login2 = Start-Process $ts -ArgumentList "up" -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-            for ($i = 1; $i -le 12; $i++) {
-              Start-Sleep -Seconds 5
-              $out = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
-              $err = Get-Content $errFile -Raw -ErrorAction SilentlyContinue
-              $combined = "$out $err"
-              if ($combined -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; $login = $login2; break }
-              if ($login2.HasExited) { break }
+            try { $proc.Kill() } catch {}
+            $proc2 = New-Object System.Diagnostics.Process
+            $proc2.StartInfo.FileName = $ts
+            $proc2.StartInfo.Arguments = "up"
+            $proc2.StartInfo.UseShellExecute = $false
+            $proc2.StartInfo.RedirectStandardOutput = $true
+            $proc2.StartInfo.RedirectStandardError = $true
+            $proc2.StartInfo.CreateNoWindow = $true
+            $proc2.Start() | Out-Null
+            $deadline2 = (Get-Date).AddSeconds(90)
+            while ((Get-Date) -lt $deadline2 -and -not $proc2.HasExited) {
+              $out = $proc2.StandardOutput.ReadLine()
+              if ($out -and $out -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
+              $err = $proc2.StandardError.ReadLine()
+              if ($err -and $err -match 'https://login\.tailscale\.com/a/[^\s''"]+') { $url = $matches[0]; break }
             }
-            if (-not $url -and -not $login2.HasExited) { $login = $login2 }
+            try { if (-not $proc2.HasExited) { $proc2.Kill() } } catch {}
+          } else {
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
           }
-          if (-not $url) { Write-Error "Gagal dapat link login. Re-run."; exit 1 }
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "LOGIN DI BROWSER:"
-          Write-Host $url
-          Write-Host "========================================"
+
+          if (-not $url) { Write-Error "URL tidak ketemu. Re-run."; exit 1 }
+          Write-Host "LOGIN: $url"
           "TS_URL=$url" >> $env:GITHUB_OUTPUT
-          $deadline = (Get-Date).AddMinutes(10)
-          $loggedIn = $false
-          while ((Get-Date) -lt $deadline) {
-            Start-Sleep -Seconds 30
-            $ipTry = (& $ts ip -4 2>$null | Select-Object -First 1)
-            $global:LASTEXITCODE = 0
-            if ($ipTry -and $ipTry -match '^100\.') { $loggedIn = $true; break }
-          }
-          if (-not $loggedIn) { Write-Error "Timeout login. Re-run."; exit 1 }
-          $global:LASTEXITCODE = 0
 
       - name: Get Tailscale IP
         id: ts_ip
@@ -139,12 +139,17 @@ jobs:
           $global:LASTEXITCODE = 0
           "USER=$u" >> $env:GITHUB_OUTPUT
           "PASS=$p" >> $env:GITHUB_OUTPUT
+
+      - name: Output
+        shell: pwsh
+        run: |
           Write-Host ""
           Write-Host "========================================"
-          Write-Host "RDP SIAP"
-          Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
-          Write-Host "Username : $u"
-          Write-Host "Password : $p"
+          Write-Host "LOGIN : ${{ steps.ts_login.outputs.TS_URL }}"
+          Write-Host "IP    : ${{ steps.ts_ip.outputs.IP }}"
+          Write-Host "PORT  : 3389"
+          Write-Host "USER  : ${{ steps.create.outputs.USER }}"
+          Write-Host "PASS  : ${{ steps.create.outputs.PASS }}"
           Write-Host "========================================"
 
       - name: Keep alive
@@ -154,29 +159,8 @@ jobs:
           if (-not $hrsRaw) { $hrsRaw = "4" }
           $hrs = [int]$hrsRaw
           $end = (Get-Date).AddHours($hrs)
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "RDP RUNNING $hrs JAM"
-          Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
-          Write-Host "Username : ${{ steps.create.outputs.USER }}"
-          Write-Host "Password : ${{ steps.create.outputs.PASS }}"
-          Write-Host "========================================"
-          Write-Host "Connect: mstsc -> ${{ steps.ts_ip.outputs.IP }}"
-          Write-Host "========================================"
           while ((Get-Date) -lt $end) {
             Start-Sleep -Seconds 1800
             $rem = $end - (Get-Date)
             Write-Host "Sisa: $($rem.Hours)j $($rem.Minutes)m"
           }
-
-      - name: Output Info
-        if: always()
-        shell: pwsh
-        run: |
-          Write-Host ""
-          Write-Host "========================================"
-          Write-Host "RDP INFO"
-          Write-Host "IP       : ${{ steps.ts_ip.outputs.IP }}"
-          Write-Host "Username : ${{ steps.create.outputs.USER }}"
-          Write-Host "Password : ${{ steps.create.outputs.PASS }}"
-          Write-Host "========================================"
